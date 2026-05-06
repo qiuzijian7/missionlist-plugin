@@ -1,0 +1,74 @@
+{
+  "name": "codebuddy-history-viewer",
+  "displayName": "CodeBuddy History Viewer",
+  "description": "在左侧边栏显示 CodeBuddy 历史聊天内容",
+  "version": "0.5.1",
+  "publisher": "qiuzijian",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:codebuddy-history.view"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codebuddy-history",
+          "title": "CodeBuddy 历史",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codebuddy-history": [
+        {
+          "id": "codebuddy-history.view",
+          "name": "聊天历史",
+          "type": "webview",
+          "contextualTitle": "CodeBuddy History"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codebuddy-history.refresh",
+        "title": "刷新历史记录",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "codebuddy-history.clear",
+        "title": "清除历史记录",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "codebuddy-history.refresh",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.0",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "fs-extra": "^11.2.0"
+  }
+}

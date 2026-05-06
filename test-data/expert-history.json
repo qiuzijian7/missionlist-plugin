@@ -1,0 +1,40 @@
+[
+  {
+    "id": "chat-001",
+    "title": "React 组件开发",
+    "preview": "帮我创建一个 React 函数组件...",
+    "timestamp": 1715000000000,
+    "messages": [
+      {
+        "role": "user",
+        "content": "帮我创建一个 React 函数组件，用于显示用户列表",
+        "timestamp": 1715000000000
+      },
+      {
+        "role": "assistant",
+        "content": "好的，我来帮你创建一个用户列表组件...",
+        "timestamp": 1715000001000
+      }
+    ]
+  },
+  {
+    "id": "chat-002",
+    "title": "Python 数据分析",
+    "preview": "如何使用 pandas 读取 CSV 文件...",
+    "timestamp": 1714900000000,
+    "messages": [
+      {
+        "role": "user",
+        "content": "如何使用 pandas 读取 CSV 文件并进行数据清洗？",
+        "timestamp": 1714900000000
+      }
+    ]
+  },
+  {
+    "id": "chat-003",
+    "title": "VS Code 扩展开发",
+    "preview": "如何创建 VS Code 扩展...",
+    "timestamp": 1714800000000,
+    "messages": []
+  }
+]

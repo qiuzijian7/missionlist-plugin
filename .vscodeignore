@@ -1,0 +1,11 @@
+node_modules/**
+src/**
+!src/webview/**
+test-data/**
+*.py
+*.txt
+.vscode/**
+.vscodeignore
+tsconfig.json
+package-lock.json
+README.md
