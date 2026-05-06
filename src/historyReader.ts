@@ -328,10 +328,23 @@ function readSessionsFromRoot(
                 let preview = '';
                 let sessionId: string | undefined;
 
+                // 优先级0（最高）: 读取用户自定义的 title.txt（通过插件重命名功能保存）
+                const customTitleFile = path.join(workspacePath, sessionDir, 'title.txt');
+                let hasCustomTitle = false;
+                if (fs.existsSync(customTitleFile)) {
+                    try {
+                        const customTitle = fs.readFileSync(customTitleFile, 'utf-8').trim();
+                        if (customTitle) {
+                            title = customTitle;
+                            hasCustomTitle = true;
+                        }
+                    } catch { /* ignore */ }
+                }
+
                 // 优先级1: 从工作区 index.json 的 conversations[].name 读取标题
                 // 这是 CodeBuddy IDE 中实际显示的对话名称
                 const convName = conversationNames.get(sessionDir);
-                if (convName) {
+                if (!hasCustomTitle && convName) {
                     title = convName;
                 }
 
@@ -366,8 +379,8 @@ function readSessionsFromRoot(
                 }
 
                 if (matchedDbSession) {
-                    // 优先级2: 数据库 custom_title（仅在工作区 index.json 中没找到时使用）
-                    if (!convName) {
+                    // 优先级2: 数据库 custom_title（仅在没有自定义标题且工作区 index.json 中没找到时使用）
+                    if (!hasCustomTitle && !convName) {
                         title = matchedDbSession.customTitle || matchedDbSession.title || '未命名对话';
                     }
                     sessionId = matchedDbSession.sessionId;
@@ -395,7 +408,7 @@ function readSessionsFromRoot(
                     }
                 }
 
-                if (!matchedDbSession && !convName && firstUserContent) {
+                if (!hasCustomTitle && !matchedDbSession && !convName && firstUserContent) {
                     title = buildSessionTitle(firstUserContent);
                 }
 
@@ -581,6 +594,19 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
         let title = '未命名对话';
         let sessionId: string | undefined;
 
+        // 优先级0（最高）: 读取用户自定义的 title.txt
+        let hasCustomTitle = false;
+        const customTitleFile = path.join(sessionPath, 'title.txt');
+        if (fs.existsSync(customTitleFile)) {
+            try {
+                const customTitle = fs.readFileSync(customTitleFile, 'utf-8').trim();
+                if (customTitle) {
+                    title = customTitle;
+                    hasCustomTitle = true;
+                }
+            } catch { /* ignore */ }
+        }
+
         // 优先级1: 从工作区 index.json 的 conversations[].name 读取标题
         // 这是 CodeBuddy IDE 中实际显示的对话名称
         const wsIndexPath = path.join(historyRoot, workspaceHash, 'index.json');
@@ -592,7 +618,9 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
                 const conv = (wsIndex.conversations || []).find((c: any) => c.id === sessionDir);
                 if (conv && conv.name) {
                     convName = conv.name;
-                    title = conv.name;
+                    if (!hasCustomTitle) {
+                        title = conv.name;
+                    }
                 }
                 if (conv && conv.lastMessageAt) {
                     convLastMessageAt = conv.lastMessageAt;
@@ -600,17 +628,17 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
             } catch { /* ignore */ }
         }
 
-        // 优先级2: 从数据库读取标题（仅在没有 convName 时）
+        // 优先级2: 从数据库读取标题（仅在没有自定义标题和 convName 时）
         const dbCache = readSessionTitlesFromDB();
         const dbInfo = dbCache.byIdNoHyphen.get(sessionDir) || dbCache.byId.get(sessionDir);
         if (dbInfo) {
-            if (!convName) {
+            if (!hasCustomTitle && !convName) {
                 title = dbInfo.customTitle || dbInfo.title || '未命名对话';
             }
             sessionId = dbInfo.sessionId;
         }
         // 优先级3: 使用与 CodeBuddy 一致的算法从第一条用户消息生成标题
-        if (!convName && !dbInfo) {
+        if (!hasCustomTitle && !convName && !dbInfo) {
             const firstUserMsg = chatMessages.find(m => m.role === 'user');
             if (firstUserMsg) {
                 title = buildSessionTitle(firstUserMsg.content);
