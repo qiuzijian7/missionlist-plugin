@@ -161,9 +161,13 @@ body {
     margin-left: 8px;
 }
 
+.history-item-wrapper {
+    margin-bottom: 6px;
+    position: relative;
+}
+
 .history-item {
     padding: 10px 12px;
-    margin-bottom: 6px;
     border-radius: 6px;
     cursor: pointer;
     border: 1px solid transparent;
@@ -171,11 +175,56 @@ body {
     transition: all 0.2s ease;
     display: flex;
     align-items: flex-start;
+    gap: 4px;
 }
 
 .history-item:hover {
     background-color: var(--vscode-list-hoverBackground);
     border-color: var(--vscode-focusBorder);
+}
+
+/* 选中/激活会话样式 - 高亮显示当前正在使用的会话 */
+.history-item.selected {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    border-color: var(--vscode-focusBorder, #007fd4);
+    box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007fd4);
+}
+
+.history-item.selected:hover {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    border-color: var(--vscode-focusBorder, #007fd4);
+}
+
+/* 活跃会话样式 - 绿灯指示器 + 左侧绿色边框 */
+.history-item.active-session {
+    border-left: 3px solid #4caf50;
+    background-color: rgba(76, 175, 80, 0.08);
+}
+
+.history-item.active-session:hover {
+    background-color: rgba(76, 175, 80, 0.14);
+}
+
+/* 活跃会话绿灯指示器 */
+.active-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: #4caf50;
+    flex-shrink: 0;
+    margin-right: 4px;
+    margin-top: 5px;
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+    animation: activePulse 2s ease-in-out infinite;
+}
+
+@keyframes activePulse {
+    0%, 100% {
+        box-shadow: 0 0 6px rgba(76, 175, 80, 0.6);
+    }
+    50% {
+        box-shadow: 0 0 12px rgba(76, 175, 80, 0.9);
+    }
 }
 
 .history-content {
@@ -255,14 +304,141 @@ body {
     padding: 20px;
 }
 
-/* 拖拽样式 */
-.history-item.dragging {
-    opacity: 0.5;
-    border: 2px dashed var(--vscode-focusBorder);
+/* 拖拽进行中禁止文字选中 */
+body.is-dragging {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    cursor: grabbing !important;
 }
 
-.history-item.drag-over {
-    border-top: 2px solid var(--vscode-focusBorder);
+body.is-dragging .history-item {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+
+/* 拖拽：原始位置占位符 */
+.history-item-wrapper.drag-placeholder .history-item {
+    opacity: 0.25;
+    border: 2px dashed var(--vscode-focusBorder);
+    background-color: transparent;
+}
+
+/* 拖拽：幽灵元素 */
+.drag-ghost {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: none;
+    opacity: 0.88;
+    transform: rotate(1.5deg) scale(1.02);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    border-radius: 6px;
+    background-color: var(--vscode-list-activeSelectionBackground);
+    border: 1px solid var(--vscode-focusBorder);
+    transition: none;
+}
+
+/* 放置指示线：上方插入 */
+.history-item-wrapper.drop-above::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: 4px;
+    right: 4px;
+    height: 3px;
+    background-color: var(--vscode-focusBorder, #007fd4);
+    border-radius: 3px;
+    z-index: 100;
+    box-shadow: 0 0 8px var(--vscode-focusBorder, #007fd4);
+    animation: dropLinePulse 1s ease-in-out infinite;
+}
+
+/* 放置指示线：下方插入 */
+.history-item-wrapper.drop-below::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 4px;
+    right: 4px;
+    height: 3px;
+    background-color: var(--vscode-focusBorder, #007fd4);
+    border-radius: 3px;
+    z-index: 100;
+    box-shadow: 0 0 8px var(--vscode-focusBorder, #007fd4);
+    animation: dropLinePulse 1s ease-in-out infinite;
+}
+
+@keyframes dropLinePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* 展开/折叠按钮 */
+.expand-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    min-width: 20px;
+    height: 20px;
+    cursor: pointer;
+    font-size: 10px;
+    color: var(--vscode-descriptionForeground);
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+    margin-top: 2px;
+}
+
+.expand-btn:hover {
+    color: var(--vscode-foreground);
+}
+
+/* 展开内容容器 */
+.expanded-content {
+    padding: 8px 12px;
+    margin-top: 8px;
+    background-color: var(--vscode-editor-inlineChat-background, rgba(0, 0, 0, 0.05));
+    border-radius: 4px;
+    border-left: 3px solid var(--vscode-focusBorder, #007fd4);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* 空状态 */
+.expanded-empty {
+    color: var(--vscode-descriptionForeground);
+    font-size: 12px;
+    text-align: center;
+    padding: 10px;
+}
+
+/* 消息列表 */
+.expanded-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* 单条消息 */
+.expanded-message {
+    padding: 6px 8px;
+    background-color: var(--vscode-sideBar-background);
+    border-radius: 4px;
+    border: 1px solid var(--vscode-panel-border);
+}
+
+.expanded-message-header {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--vscode-textLink-foreground);
+    margin-bottom: 4px;
+}
+
+.expanded-message-content {
+    font-size: 12px;
+    color: var(--vscode-foreground);
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 /* 滚动条样式 */

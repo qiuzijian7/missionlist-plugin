@@ -189,19 +189,29 @@ function buildSessionTitle(inboundText: string): string {
 }
 
 /**
+ * 从文本中提取 <user_query> 标签内的内容
+ * 如果没有 <user_query> 标签，返回 null
+ */
+function extractUserQueryContent(text: string): string | null {
+    const match = text.match(/<user_query>([\s\S]*?)<\/user_query>/);
+    return match ? match[1].trim() : null;
+}
+
+/**
  * 从消息的 message 字段解析出纯文本内容
  */
-function extractMessageContent(rawMessage: string): string {
+function extractMessageContent(rawMessage: string, maxLength: number = 200): string {
     try {
         const parsed = JSON.parse(rawMessage);
         if (typeof parsed === 'string') {
-            return parsed;
+            return maxLength < parsed.length ? parsed.substring(0, maxLength) : parsed;
         }
         if (parsed && typeof parsed.content === 'string') {
-            return parsed.content;
+            const content = parsed.content;
+            return maxLength < content.length ? content.substring(0, maxLength) : content;
         }
         if (parsed && Array.isArray(parsed.content)) {
-            return parsed.content
+            const joined = parsed.content
                 .map((item: any) => {
                     if (typeof item === 'string') return item;
                     if (item && item.text) return item.text;
@@ -214,12 +224,12 @@ function extractMessageContent(rawMessage: string): string {
                     return '';
                 })
                 .filter((s: string) => s.length > 0)
-                .join('\n')
-                .substring(0, 200);
+                .join('\n');
+            return maxLength < joined.length ? joined.substring(0, maxLength) : joined;
         }
-        return rawMessage.substring(0, 200);
+        return maxLength < rawMessage.length ? rawMessage.substring(0, maxLength) : rawMessage;
     } catch {
-        return rawMessage.substring(0, 200);
+        return maxLength < rawMessage.length ? rawMessage.substring(0, maxLength) : rawMessage;
     }
 }
 
@@ -402,7 +412,10 @@ function readSessionsFromRoot(
                     if (fs.existsSync(msgFilePath)) {
                         try {
                             const msgData = JSON.parse(fs.readFileSync(msgFilePath, 'utf-8'));
-                            firstUserContent = extractMessageContent(msgData.message || '');
+                            const rawContent = extractMessageContent(msgData.message || '');
+                            // 优先使用 <user_query> 标签内的内容作为预览
+                            const userQueryContent = extractUserQueryContent(rawContent);
+                            firstUserContent = userQueryContent || rawContent;
                             preview = firstUserContent.substring(0, 150).replace(/\n/g, ' ');
                         } catch { /* ignore parse errors */ }
                     }
@@ -573,6 +586,11 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
         const messagesDir = path.join(sessionPath, 'messages');
 
         for (const msgRef of indexMessages) {
+            // 只处理用户消息
+            if (msgRef.role !== 'user') {
+                continue;
+            }
+
             const msgFilePath = path.join(messagesDir, `${msgRef.id}.json`);
             if (!fs.existsSync(msgFilePath)) {
                 continue;
@@ -580,12 +598,18 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
 
             try {
                 const msgData = JSON.parse(fs.readFileSync(msgFilePath, 'utf-8'));
-                const content = extractMessageContent(msgData.message || '');
+                const rawContent = extractMessageContent(msgData.message || '', Infinity);
                 const timestamp = /^\d+$/.test(sessionDir) ? parseInt(sessionDir, 10) : Date.now();
 
+                // 提取 <user_query> 标签内的内容，没有则跳过该消息
+                const userQueryContent = extractUserQueryContent(rawContent);
+                if (!userQueryContent) {
+                    continue;
+                }
+
                 chatMessages.push({
-                    role: msgData.role || msgRef.role,
-                    content,
+                    role: 'user',
+                    content: userQueryContent,
                     timestamp
                 });
             } catch { /* ignore individual message errors */ }

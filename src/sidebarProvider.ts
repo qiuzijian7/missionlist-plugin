@@ -355,6 +355,27 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * 更新当前激活的会话（用于高亮显示）
+     * @param sessionId 当前激活的会话 ID（sessionDir 格式），null 表示没有激活的会话
+     */
+    public updateActiveSession(sessionId: string | null): void {
+        if (this._view) {
+            this._view.webview.postMessage({
+                type: 'updateActiveSession',
+                data: sessionId
+            });
+        }
+    }
+
+    /**
+     * 请求状态监控立即刷新活跃会话状态
+     */
+    public requestActiveSessionUpdate(): void {
+        // 重新导入并调用检测函数太耦合，改用标记让 monitor 自行刷新
+        // monitor 每 1.5s 自动刷新，无需额外处理
+    }
+
     private _getHtmlForWebview(webview: vscode.Webview): string {
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this._extensionUri, 'src', 'webview', 'main.js')
@@ -385,6 +406,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                                     <option value="title-desc">标题 Z→A</option>
                                     <option value="messages-desc">消息数 ↓ 多</option>
                                     <option value="messages-asc">消息数 ↑ 少</option>
+                                    <option value="custom">手动排序</option>
                                 </select>
                                 <button id="refreshBtn" title="刷新">🔄</button>
                             </div>
