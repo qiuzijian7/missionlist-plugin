@@ -24,7 +24,10 @@
     const messageQueue = [];
 
     let currentHistory = [];
-    let currentSort = 'time-desc';
+    // 默认手动排序：以用户拖拽后保存到 history-order.json 的顺序为准
+    // 后端在没有 customOrder 时会以时间倒序作为初始 baseline；
+    // 用户拖拽过一次后，即固化，不再被任何"自动排序"覆盖
+    let currentSort = 'custom';
 
     // 拖拽状态
     let dragState = {

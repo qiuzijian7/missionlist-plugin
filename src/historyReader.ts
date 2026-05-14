@@ -94,7 +94,7 @@ export function computeWorkspaceHash(workspacePath: string): string {
 /**
  * 为 Windows 路径生成候选哈希列表（大小写盘符都尝试）
  */
-function getCandidateHashes(workspacePath: string): string[] {
+export function getCandidateHashes(workspacePath: string): string[] {
     const normalized = path.normalize(workspacePath);
     const hashes = [computeWorkspaceHash(normalized)];
 
@@ -575,8 +575,18 @@ export async function readCodeBuddyHistory(currentWorkspacePath?: string): Promi
         vscode.window.showErrorMessage(`无法读取历史记录: ${error}`);
     }
 
-    // 尝试应用保存的自定义排序
-    const customOrder = readHistoryOrder();
+    // 尝试应用保存的自定义排序（按工作区隔离）
+    let customOrder: string[] = [];
+    if (currentWorkspacePath) {
+        const candidateHashes = getCandidateHashes(currentWorkspacePath);
+        for (const hash of candidateHashes) {
+            const order = readHistoryOrder(hash);
+            if (order.length > 0) {
+                customOrder = order;
+                break;
+            }
+        }
+    }
     if (customOrder.length > 0) {
         // 创建一个映射：chatId -> ChatHistory
         const historyMap = new Map<string, ChatHistory>();
@@ -594,16 +604,48 @@ export async function readCodeBuddyHistory(currentWorkspacePath?: string): Promi
             }
         }
 
-        // 将不在自定义顺序中的聊天记录追加到末尾
-        for (const [id, chat] of historyMap) {
+        // 将不在自定义顺序中的"新会话"按时间倒序追加到末尾，
+        // 保证已固化的拖拽顺序不被打乱，新会话以稳定方式（最新在前）出现
+        const newcomers = Array.from(historyMap.values())
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        for (const chat of newcomers) {
             orderedHistory.push(chat);
+        }
+
+        // 关键：一旦出现新会话或 customOrder 中包含已不存在的 id，
+        // 立即把当前显示顺序写回 history-order.json，让"新会话也被固化"。
+        // 这样用户后续就再也不会看到任何"自动排序"行为——所有位置都是被记录的。
+        const orderedIds = orderedHistory.map(c => c.id);
+        const orderChanged =
+            orderedIds.length !== customOrder.length ||
+            orderedIds.some((id, i) => id !== customOrder[i]);
+        if (orderChanged) {
+            // fire-and-forget，写盘失败也不影响本次返回
+            saveHistoryOrder(orderedIds).catch(err => {
+                console.error('[HistoryViewer] 自动固化新会话顺序失败:', err);
+            });
         }
 
         return orderedHistory;
     }
 
-    // 如果没有自定义排序，按时间降序排列
-    return history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    // 没有自定义排序时（首次使用或 history-order.json 缺失）：
+    // 1) 用"当前可见的会话集合"按时间降序生成一份初始快照（仅作为首屏展示）；
+    // 2) 立刻（同步 await）把该快照写回 history-order.json，把每个 id 的位置固化下来。
+    // 这样从下一次刷新起，就完全走上面的 customOrder 分支——
+    // 任何会话被输入新消息（timestamp 改变）都不会再被排到顶部。
+    const sortedBaseline = history.slice().sort(
+        (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+    );
+    if (currentWorkspacePath && sortedBaseline.length > 0) {
+        const ids = sortedBaseline.map(c => c.id);
+        try {
+            await saveHistoryOrder(ids);
+        } catch (err) {
+            console.error('[HistoryViewer] 初始化 history-order.json 失败:', err);
+        }
+    }
+    return sortedBaseline;
 }
 
 /**
@@ -889,28 +931,50 @@ export async function deleteChatHistory(chatId: string): Promise<boolean> {
 }
 
 /**
- * 保存历史记录的新排序顺序
- * 将排序后的 ID 列表保存到一个配置文件中
- * @param orderedIds 按新顺序排列的聊天 ID 列表
+ * 保存历史记录的新排序顺序（按工作区隔离存储）
+ * 将排序后的 ID 列表保存到配置文件，按 workspaceHash 隔离
+ * @param orderedIds 按新顺序排列的聊天 ID 列表（格式 "workspaceHash/sessionDir"）
  */
 export async function saveHistoryOrder(orderedIds: string[]): Promise<boolean> {
     try {
-        // 保存到用户主目录的 .codebuddy 目录
+        if (orderedIds.length === 0) { return true; }
+
+        // 从第一个 ID 提取 workspaceHash（格式: "workspaceHash/sessionDir"）
+        const workspaceHash = orderedIds[0]?.split('/')[0];
+        if (!workspaceHash) { return true; }
+
         const orderFilePath = path.join(os.homedir(), '.codebuddy', 'history-order.json');
-        
+
+        // 读取已有顺序（支持新旧两种格式）
+        let orders: Record<string, string[]> = {};
+        if (fs.existsSync(orderFilePath)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(orderFilePath, 'utf-8'));
+                if (data.workspaceOrders) {
+                    orders = data.workspaceOrders;
+                } else if (data.order) {
+                    // 旧格式：迁移到新格式（但不知道属于哪个 workspaceHash，只能丢弃）
+                    // 开始使用新格式
+                }
+            } catch { /* ignore */ }
+        }
+
+        // 仅更新当前工作区的顺序
+        orders[workspaceHash] = orderedIds;
+
         // 确保目录存在
         const dirPath = path.dirname(orderFilePath);
         if (!fs.existsSync(dirPath)) {
             fs.mkdirSync(dirPath, { recursive: true });
         }
-        
-        // 写入排序顺序
+
+        // 写入排序顺序（新格式：按工作区隔离）
         fs.writeFileSync(
-            orderFilePath, 
-            JSON.stringify({ order: orderedIds, updatedAt: Date.now() }, null, 2), 
+            orderFilePath,
+            JSON.stringify({ workspaceOrders: orders, updatedAt: Date.now() }, null, 2),
             'utf-8'
         );
-        
+
         return true;
     } catch (error) {
         console.error('保存历史记录排序失败:', error);
@@ -919,19 +983,36 @@ export async function saveHistoryOrder(orderedIds: string[]): Promise<boolean> {
 }
 
 /**
- * 读取历史记录的排序顺序
+ * 读取历史记录的排序顺序（按工作区隔离读取）
+ * @param workspaceHash 可选，指定工作区哈希，仅返回该工作区的顺序
  * @returns 排序后的聊天 ID 列表，如果不存在则返回空数组
  */
-export function readHistoryOrder(): string[] {
+export function readHistoryOrder(workspaceHash?: string): string[] {
     try {
         const orderFilePath = path.join(os.homedir(), '.codebuddy', 'history-order.json');
-        
+
         if (!fs.existsSync(orderFilePath)) {
             return [];
         }
-        
+
         const data = JSON.parse(fs.readFileSync(orderFilePath, 'utf-8'));
-        return data.order || [];
+
+        // 新格式：按工作区隔离
+        if (data.workspaceOrders) {
+            if (workspaceHash) {
+                return data.workspaceOrders[workspaceHash] || [];
+            } else {
+                // 未指定工作区时返回空（不跨工作区应用顺序）
+                return [];
+            }
+        }
+
+        // 旧格式：全局顺序（向后兼容，仅当未指定工作区时返回）
+        if (!workspaceHash) {
+            return data.order || [];
+        }
+
+        return [];
     } catch (error) {
         console.error('读取历史记录排序失败:', error);
         return [];

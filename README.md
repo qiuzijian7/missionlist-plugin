@@ -2,7 +2,8 @@
 
 > VS Code / CodeBuddy IDE 扩展 — 把 **当前工作区** 的 CodeBuddy 聊天历史集中到左侧活动栏，支持排序、拖拽、展开浏览、状态实时高亮、一键回跳。
 
-![activity-bar-icon](resources/icon.svg)
+
+
 
 ---
 

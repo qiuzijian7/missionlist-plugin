@@ -433,14 +433,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         <div class="header">
                             <h2>CodeBuddy 聊天历史</h2>
                             <div class="header-actions">
-                                <select id="sortSelect" title="排序方式">
+                                <select id="sortSelect" title="排序方式（默认手动，按拖拽位置固定）">
+                                    <option value="custom" selected>手动 (拖拽)</option>
                                     <option value="time-desc">时间 ↓ 最新</option>
                                     <option value="time-asc">时间 ↑ 最早</option>
                                     <option value="title-asc">标题 A→Z</option>
                                     <option value="title-desc">标题 Z→A</option>
                                     <option value="messages-desc">消息数 ↓ 多</option>
                                     <option value="messages-asc">消息数 ↑ 少</option>
-                                    <option value="custom">手动排序</option>
                                 </select>
                                 <button id="refreshBtn" title="刷新">🔄</button>
                             </div>
