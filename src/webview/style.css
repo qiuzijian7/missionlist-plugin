@@ -456,6 +456,23 @@ body.is-dragging .history-item {
     font-weight: 600;
     color: var(--vscode-textLink-foreground);
     margin-bottom: 4px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.expanded-message-index {
+    flex: 0 0 auto;
+}
+
+.expanded-message-time {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--vscode-descriptionForeground);
+    opacity: 0.85;
+    font-variant-numeric: tabular-nums;
 }
 
 .expanded-message-content {

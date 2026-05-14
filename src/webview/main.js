@@ -424,6 +424,22 @@
         });
     }
 
+    // 单条消息的时间标签：今天显示 HH:mm，其他日期显示 M/D HH:mm
+    function formatMessageTime(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp);
+        const now = new Date();
+        const sameDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+        const hh = String(date.getHours()).padStart(2, '0');
+        const mm = String(date.getMinutes()).padStart(2, '0');
+        if (sameDay) {
+            return `${hh}:${mm}`;
+        }
+        return `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`;
+    }
+
     // ===== 刷新所有指示灯 =====
     function refreshAllIndicators() {
         const listEl = document.getElementById('historyList');
@@ -582,7 +598,22 @@
 
             const msgHeader = document.createElement('div');
             msgHeader.className = 'expanded-message-header';
-            msgHeader.textContent = `消息 ${chatDetail.messages.length - idx}`;
+
+            const msgIndexSpan = document.createElement('span');
+            msgIndexSpan.className = 'expanded-message-index';
+            msgIndexSpan.textContent = `消息 ${chatDetail.messages.length - idx}`;
+            msgHeader.appendChild(msgIndexSpan);
+
+            // 消息时间：显示在标题右侧（淡色小字）。
+            // 时间戳由后端 historyReader 写入：优先用 requests[].startedAt，
+            // 其次用消息文件 mtime。无效时不显示。
+            if (msg.timestamp && Number.isFinite(msg.timestamp) && msg.timestamp > 0) {
+                const timeSpan = document.createElement('span');
+                timeSpan.className = 'expanded-message-time';
+                timeSpan.textContent = formatMessageTime(msg.timestamp);
+                timeSpan.title = new Date(msg.timestamp).toLocaleString();
+                msgHeader.appendChild(timeSpan);
+            }
 
             const msgContent = document.createElement('div');
             msgContent.className = 'expanded-message-content';

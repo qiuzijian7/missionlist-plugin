@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { SidebarProvider } from './sidebarProvider';
-import { querySqlite, getWorkBuddyDbPath } from './db';
 
 let monitorInterval: NodeJS.Timeout | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
@@ -27,6 +26,32 @@ let manualActiveSessionDir: string | null = null;
 let manualActiveSetAt: number = 0;
 /** 手动设置的有效期：用户切换后 5 分钟内强制保持，过后回归 fs 兜底逻辑 */
 const MANUAL_ACTIVE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * 启动宽限期：扩展激活后的最初一段时间内，**不允许** mtime 兜底来选 active。
+ *
+ * 背景：IDE 刚启动时，CodeBuddy 聊天框真正打开的会话不一定是 history/<id>/index.json
+ * mtime 最大的那个——例如：
+ *   - 聊天框打开的是一个**新建空会话**，其 index.json 刚被 touch，mtime 反而落后于
+ *     "上次用过的旧会话"（旧会话最后一次写入的 mtime 更晚）。
+ *   - 聊天框打开的是一个旧会话，但插件启动期间另一个会话被后台 automation 触发写过。
+ *
+ * workbuddy.db 中并不存在"当前激活 session"这种状态字段（已通过 schema 确认），
+ * 因此插件没有可靠途径在启动瞬间识别聊天框打开的会话。最稳妥的做法：
+ *   - 启动初期只接受 fs 中真正出现 `running` 状态的会话作为 active；
+ *   - 没有 running 时**不下发 active**（webview 端会清掉错位高亮）；
+ *   - 等用户在插件里点击切换、或在 IDE 聊天框真正发消息触发 running 后再绑定。
+ * 宽限期过后再回归 mtime 兜底，避免长时间无 active 影响日常使用。
+ */
+const STARTUP_GRACE_MS = 8 * 1000;
+const monitorStartedAt: number = Date.now();
+
+/**
+ * mtime 兜底窗口：只有最近 30 分钟内修改过的会话才作为兜底候选。
+ * 原先放的是 24 小时——冷启动时容易把"昨天最后用的会话"错误高亮，
+ * 缩到 30 分钟可以显著减少误判。
+ */
+const MTIME_FALLBACK_WINDOW_MS = 30 * 60 * 1000;
 
 /**
  * 由外部（用户操作）声明当前活跃会话的 sessionDir。
@@ -119,35 +144,45 @@ async function updateChatStatus(sidebarProvider: SidebarProvider): Promise<void>
         // 1. 扫描文件系统获取所有会话状态（含活跃会话候选，限定当前工作区）
         const fsResult = scanFromFileSystem(filterHashes);
 
-        // 2. 决定最终活跃会话：
-        //    - fs 检测到 running 的会话最高优先级（实时反映正在执行）
-        //    - 手动声明的会话次之（用户刚在插件里点击切换）
-        //    - fs mtime 兜底最低优先级
-        let activeSessionId = fsResult.activeSessionId;
+        // 2. 决定最终活跃会话（优先级 高 → 低）：
+        //    a. fs 检测到 running 状态的会话（实时反映正在执行）—— 任何时候都最高优先级
+        //    b. 手动声明的会话（用户刚在插件里点击切换）
+        //    c. fs mtime 兜底候选（仅最近 30 分钟内修改过的）
+        //    特殊：启动宽限期内（首 STARTUP_GRACE_MS 毫秒）禁用 c，避免冷启动 mtime 错位
+        let activeSessionId: string | null = null;
 
-        const manualValid =
-            manualActiveSessionDir &&
-            (Date.now() - manualActiveSetAt) < MANUAL_ACTIVE_TTL_MS;
+        // a) fs 扫描到的 running 会话（fsResult.runningSessionId 仅在确实有 running 时非空）
+        if (fsResult.runningSessionId) {
+            activeSessionId = fsResult.runningSessionId;
+        }
 
-        if (manualValid) {
-            // 校验手动声明的 sessionDir 仍属于当前工作区且存在
-            const manualChatId = Object.keys(fsResult.statusMap).find(
-                id => id.endsWith('/' + manualActiveSessionDir!)
-            );
-            if (manualChatId) {
-                const manualStatus = fsResult.statusMap[manualChatId];
-                // 仅当 fs 没找到 running，或 fs 找到的也不是 running 时，用手动值覆盖
-                const fsActiveStatus = fsResult.activeSessionId
-                    ? Object.entries(fsResult.statusMap).find(
-                        ([id]) => id.endsWith('/' + fsResult.activeSessionId)
-                    )?.[1]
-                    : undefined;
-                if (fsActiveStatus !== 'running' || manualStatus === 'running') {
+        // b) 手动声明（仅当 a 未命中）
+        if (!activeSessionId) {
+            const manualValid =
+                manualActiveSessionDir &&
+                (Date.now() - manualActiveSetAt) < MANUAL_ACTIVE_TTL_MS;
+            if (manualValid) {
+                // 校验手动声明的 sessionDir 仍属于当前工作区且存在
+                const manualChatId = Object.keys(fsResult.statusMap).find(
+                    id => id.endsWith('/' + manualActiveSessionDir!)
+                );
+                if (manualChatId) {
                     activeSessionId = manualActiveSessionDir;
+                } else {
+                    // 已不在当前工作区列表中，丢弃手动值
+                    manualActiveSessionDir = null;
                 }
-            } else {
-                // 已不在当前工作区列表中，丢弃手动值
-                manualActiveSessionDir = null;
+            }
+        }
+
+        // c) mtime 兜底（仅在启动宽限期之外才启用）
+        if (!activeSessionId) {
+            const sinceStart = Date.now() - monitorStartedAt;
+            if (sinceStart >= STARTUP_GRACE_MS) {
+                activeSessionId = fsResult.fallbackSessionId;
+            } else if (fsResult.fallbackSessionId && lastActiveSessionId === null) {
+                // 启动宽限期内仅记录日志，不下发兜底 active
+                log(`[启动宽限期] 跳过 mtime 兜底候选: ${fsResult.fallbackSessionId} (剩余 ${STARTUP_GRACE_MS - sinceStart}ms)`);
             }
         }
 
@@ -199,52 +234,17 @@ export function logFromWebview(msg: string): void {
     log(`[Webview] ${msg}`);
 }
 
-/** 尝试多个可能的 workbuddy.db 路径 */
-function findWorkBuddyDbPaths(): string[] {
-    const home = os.homedir();
-    const candidates = [
-        path.join(home, '.workbuddy', 'workbuddy.db'),
-        path.join(home, 'AppData', 'Local', 'CodeBuddyExtension', 'workbuddy.db'),
-        path.join(home, 'AppData', 'Roaming', 'CodeBuddyExtension', 'workbuddy.db'),
-        path.join(home, 'AppData', 'Local', 'Tencent', 'CodeBuddy', 'workbuddy.db'),
-        path.join(home, 'AppData', 'Roaming', 'Tencent', 'CodeBuddy', 'workbuddy.db'),
-    ];
-    return candidates;
-}
-
-/**
- * 从 WorkBuddy 数据库检测活跃会话
- * 尝试多个可能的 DB 路径
- */
-async function detectActiveSessionFromDB(): Promise<string | null> {
-    const candidates = findWorkBuddyDbPaths();
-    for (const dbPath of candidates) {
-        if (!fs.existsSync(dbPath)) { continue; }
-
-        try {
-            const results = await querySqlite(
-                dbPath,
-                `SELECT id FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1`
-            );
-
-            if (results.length > 0 && results[0].values.length > 0) {
-                const sessionId = String(results[0].values[0][0]);
-                if (sessionId) {
-                    const dirName = sessionId.replace(/-/g, '');
-                    return dirName;
-                }
-            }
-        } catch (error) {
-            log(`DB 查询失败 (${dbPath}): ${error}`);
-        }
-    }
-
-    return null;
-}
-
 interface FileScanResult {
-    /** 活跃会话 sessionDir（供 DB 优先覆盖后兜底） */
-    activeSessionId: string | null;
+    /**
+     * 当前是否有 running 状态的会话；有则其 sessionDir，否则 null。
+     * 这是"实时活跃"的最强信号，由 updateChatStatus 优先采用。
+     */
+    runningSessionId: string | null;
+    /**
+     * mtime 兜底候选 sessionDir：当前工作区下最近 30 分钟内 mtime 最大的非 running 会话。
+     * 仅在没有 running 且过了启动宽限期后由 updateChatStatus 启用。
+     */
+    fallbackSessionId: string | null;
     /** chatId (workspaceHash/sessionDir) → 请求状态 */
     statusMap: Record<string, string>;
     /** 本次扫描是否检测到任何 index.json 的 mtime 变化（有新消息写入或会话状态更新） */
@@ -258,8 +258,12 @@ interface FileScanResult {
  *                     statusMap 仍包含所有扫描到的会话（避免清缓存）。
  */
 function scanFromFileSystem(filterHashes?: string[] | null): FileScanResult {
-    let bestActiveDir: string | null = null;
-    let bestActiveScore = -1;
+    // running 候选：当前工作区内任意 status==='running' 的 sessionDir（最先命中即可）
+    let runningSessionId: string | null = null;
+    // mtime 兜底候选：当前工作区内最近 MTIME_FALLBACK_WINDOW_MS 内 mtime 最大的 sessionDir
+    let fallbackDir: string | null = null;
+    let fallbackMtime = -1;
+
     const statusMap: Record<string, string> = {};
     const now = Date.now();
     const seenChatIds = new Set<string>();
@@ -267,7 +271,7 @@ function scanFromFileSystem(filterHashes?: string[] | null): FileScanResult {
 
     const dataRoot = path.join(os.homedir(), 'AppData', 'Local', 'CodeBuddyExtension', 'Data');
     if (!fs.existsSync(dataRoot)) {
-        return { activeSessionId: null, statusMap, contentChanged };
+        return { runningSessionId: null, fallbackSessionId: null, statusMap, contentChanged };
     }
 
     try {
@@ -343,18 +347,16 @@ function scanFromFileSystem(filterHashes?: string[] | null): FileScanResult {
 
                             statusMap[chatId] = status;
 
-                            // 活跃会话候选：仅当该 workspaceHash 属于当前工作区时才参与评分
+                            // 活跃会话候选：仅当该 workspaceHash 属于当前工作区时才参与
                             if (isCurrentWs) {
-                                if (status === 'running') {
-                                    bestActiveDir = sessionDir;
-                                    bestActiveScore = 1000;
-                                } else if (bestActiveScore < 1000) {
-                                    const age = now - stat.mtimeMs;
-                                    // 24 小时内的最近修改视为活跃兜底
-                                    if (age < 24 * 60 * 60 * 1000 && stat.mtimeMs > bestActiveScore) {
-                                        bestActiveDir = sessionDir;
-                                        bestActiveScore = stat.mtimeMs;
-                                    }
+                                if (status === 'running' && !runningSessionId) {
+                                    runningSessionId = sessionDir;
+                                }
+                                // mtime 兜底：仅最近 MTIME_FALLBACK_WINDOW_MS 内的会话才参选
+                                const age = now - stat.mtimeMs;
+                                if (age < MTIME_FALLBACK_WINDOW_MS && stat.mtimeMs > fallbackMtime) {
+                                    fallbackDir = sessionDir;
+                                    fallbackMtime = stat.mtimeMs;
                                 }
                             }
                         } catch { /* ignore individual session errors */ }
@@ -373,7 +375,12 @@ function scanFromFileSystem(filterHashes?: string[] | null): FileScanResult {
         }
     }
 
-    return { activeSessionId: bestActiveDir, statusMap, contentChanged };
+    return {
+        runningSessionId,
+        fallbackSessionId: fallbackDir,
+        statusMap,
+        contentChanged
+    };
 }
 
 /**

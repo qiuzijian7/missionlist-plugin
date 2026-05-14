@@ -635,6 +635,26 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
 
         const indexData = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
         const indexMessages = indexData.messages || [];
+        const indexRequests = indexData.requests || [];
+
+        // 构建 msgId → startedAt（毫秒）映射：
+        // index.json 的 requests[i].messages 是该次请求涉及的 messageId 列表，
+        // 其中通常首个元素就是触发该请求的 user 消息。requests[i].startedAt 是该
+        // 请求开始的真实时间（IDE 自己写入），可作为 user 消息的时间戳。
+        const msgIdToStartedAt = new Map<string, number>();
+        for (const req of indexRequests) {
+            const startedAt = typeof req?.startedAt === 'number' ? req.startedAt : null;
+            if (!startedAt) { continue; }
+            const reqMsgs: string[] = Array.isArray(req?.messages) ? req.messages : [];
+            // 只把映射建在该请求的首条 message 上（一般是 user），
+            // 避免把 assistant/tool 也染上同一个时间。
+            if (reqMsgs.length > 0) {
+                const firstId = reqMsgs[0];
+                if (typeof firstId === 'string' && !msgIdToStartedAt.has(firstId)) {
+                    msgIdToStartedAt.set(firstId, startedAt);
+                }
+            }
+        }
 
         const chatMessages: ChatMessage[] = [];
         const messagesDir = path.join(sessionPath, 'messages');
@@ -653,12 +673,25 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
             try {
                 const msgData = JSON.parse(fs.readFileSync(msgFilePath, 'utf-8'));
                 const rawContent = extractMessageContent(msgData.message || '', Infinity);
-                const timestamp = /^\d+$/.test(sessionDir) ? parseInt(sessionDir, 10) : Date.now();
 
                 // 提取 <user_query> 标签内的内容，没有则跳过该消息
                 const userQueryContent = extractUserQueryContent(rawContent);
                 if (!userQueryContent) {
                     continue;
+                }
+
+                // 单条消息的真实时间：
+                //   1. 优先 requests[].startedAt（IDE 写入的请求开始时间，最准）
+                //   2. 兜底用消息文件的 mtime（用户发送/IDE 写入时刻）
+                //   3. 最后退到会话目录名（数字时间戳）或 Date.now()
+                let timestamp = msgIdToStartedAt.get(msgRef.id) ?? 0;
+                if (!timestamp) {
+                    try {
+                        timestamp = fs.statSync(msgFilePath).mtimeMs;
+                    } catch { /* ignore */ }
+                }
+                if (!timestamp) {
+                    timestamp = /^\d+$/.test(sessionDir) ? parseInt(sessionDir, 10) : Date.now();
                 }
 
                 chatMessages.push({
