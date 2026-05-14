@@ -1,118 +1,136 @@
 # CodeBuddy History Viewer
 
-一个 VS Code 扩展，用于在左侧活动栏显示 CodeBuddy 的历史聊天内容。
+> VS Code / CodeBuddy IDE 扩展 — 把 **当前工作区** 的 CodeBuddy 聊天历史集中到左侧活动栏，支持排序、拖拽、展开浏览、状态实时高亮、一键回跳。
 
-## 功能特性
+![activity-bar-icon](resources/icon.svg)
 
-- 📋 在左侧活动栏添加「CodeBuddy 历史」按钮
-- 💬 显示 CodeBuddy 聊天历史记录列表
-- 🔄 支持刷新历史记录
-- 🔃 支持自定义排序（时间、标题、消息数）
-- 🟢 实时状态显示（执行中、空闲、错误等）
-- 🎨 使用 VS Code 主题配色
-- 📱 响应式设计
+---
 
-## 安装方法
+## ✨ 主要特性
 
-### 方法一：从 VSIX 安装
-1. 下载 `codebuddy-history-viewer.vsix`
-2. 在 VS Code 中：`扩展` → `···` → `从 VSIX 安装...`
-3. 选择下载的 `.vsix` 文件
+- 📋 **当前工作区聚焦**：基于 `md5(normalize(cwd))` 自动匹配 CodeBuddy 的 `history/<workspaceHash>/`，只显示与当前 VS Code 工作区相关的会话（兼容 Windows 大小写盘符）
+- 🟢 **实时状态指示灯**：每 3 秒后台扫描 `index.json`，区分 `running` / `pending` / `completed` / `error` / `idle`，并对**当前活跃会话**做特殊高亮（fs running ▶ 手动声明 ▶ mtime 兜底，含启动宽限期防误判）
+- 🔃 **多维排序 + 手动拖拽**：时间 / 标题 / 消息数升降序，加上自由拖拽并持久化顺序
+- 💬 **就地展开聊天详情**：列出全部用户消息，每条带**真实发送时间**（来自 `requests[].startedAt`，回退到消息文件 mtime）
+- ✏️ **重命名 / 🗑️ 删除**：重命名通过会话目录下 `title.txt` 写入，不污染 CodeBuddy 原始数据；删除为物理移除整个 sessionDir
+- 🔁 **一键回跳**：点击会话标题，尝试通过 CodeBuddy 扩展 API / 已知命令切换到对应会话，并立即把"手动声明"写回状态监控，高亮无延迟
+- 🎨 **完全跟随 VS Code 主题**：所有颜色取自 `--vscode-*` CSS 变量
 
-### 方法二：从源码编译
+---
+
+## 📦 安装
+
+### 从 VSIX 安装（推荐）
+
+1. `Ctrl+Shift+X` 打开扩展面板
+2. 右上角 `···` → **从 VSIX 安装…**
+3. 选择 `codebuddy-history-viewer.vsix`
+
+### 从源码
+
 ```bash
-# 克隆项目
-cd missionlist-plugin
-
-# 安装依赖
 npm install
-
-# 编译 TypeScript
-npm run compile
-
-# 打包为 VSIX
-npx vsce package
+npm run compile          # tsc + 拷贝 sql-wasm
+# 按 F5 启动扩展开发宿主调试，或：
+npm run package          # 打包为 codebuddy-history-viewer.vsix（固定文件名）
 ```
 
-## 使用方法
+---
 
-1. 安装扩展后，左侧活动栏会出现「CodeBuddy 历史」图标
-2. 点击图标，侧边栏会显示聊天历史列表
-3. 点击右上角刷新按钮可以重新加载历史记录
-4. 点击历史记录项可以打开对应的对话
+## 🚀 使用速览
 
-## 测试扩展
+| 操作 | 方式 |
+|---|---|
+| 打开侧边栏 | 左侧活动栏 → CodeBuddy 历史图标 |
+| 切换排序 | 顶部下拉框（含「手动排序」） |
+| 重新排序 | 切到「手动排序」后长按拖拽 |
+| 展开消息 | 点击列表项内容区 |
+| 重命名 | 悬停项 → ✏️ |
+| 删除 | 悬停项 → 🗑️（二次确认） |
+| 跳回 IDE 会话 | 点击列表项标题 |
+| 刷新 | 顶部 🔄 / 命令面板「刷新历史记录」 |
 
-### 方法一：按 F5 调试运行
-1. 在 VS Code 中打开本项目
-2. 按 `F5` 启动扩展开发宿主
-3. 在新打开的 VS Code 窗口中，查看左侧活动栏
-4. 点击「CodeBuddy 历史」图标测试功能
+详细说明、状态优先级、数据路径、调试日志见 [`USAGE.md`](./USAGE.md)。
 
-### 方法二：使用测试数据
-1. 将 `test-data/expert-history.json` 复制到 `~/.codebuddy/` 目录
-2. 或者在 `src/historyReader.ts` 中添加测试路径：
-   ```typescript
-   path.join(os.homedir(), 'CustomWorkspaces', 'AIProjects', 'missionlist-plugin', 'test-data', 'expert-history.json')
-   ```
+---
 
-## 数据存储位置
+## 🗂️ 数据来源（只读为主）
 
-扩展会从以下位置读取 CodeBuddy 历史记录：
-
-- `~/.codebuddy/expert-history.json`
-- `%APPDATA%/Code/User/globalStorage/tencent-cloud.coding-copilot/history.json`
-- VS Code 工作区存储数据库 (`.vscdb`)
-
-## 开发指南
-
-### 项目结构
 ```
-missionlist-plugin/
-├── src/
-│   ├── extension.ts          # 扩展入口
-│   ├── sidebarProvider.ts    # 侧边栏提供器
-│   ├── historyReader.ts      # 历史记录读取器
-│   └── webview/
-│       ├── main.js           # Webview 前端逻辑
-│       └── style.css        # Webview 样式
-├── resources/
-│   └── icon.svg             # 活动栏图标
-├── package.json              # 扩展配置
-├── tsconfig.json             # TypeScript 配置
-└── README.md                # 说明文档
+%LOCALAPPDATA%\CodeBuddyExtension\Data\<account>\CodeBuddyIDE\<uid>\history\
+└── <workspaceHash>\
+    ├── index.json            ← 排序记录（手动排序写入此处）
+    └── <sessionDir>\
+        ├── index.json        ← messages + requests[].startedAt + state
+        ├── messages\<msgId>.json
+        └── title.txt        ← 本插件写入的自定义标题
 ```
 
-### 调试运行
-1. 在 VS Code 中打开项目
-2. 按 `F5` 启动扩展开发宿主
-3. 在新窗口中测试扩展功能
+辅助：`~/.workbuddy/workbuddy.db`（sql.js 读取）—— 提供 cwd → workspaceHash 的反查映射。
 
-## 技术栈
+> 插件对原始数据**只读**；写入仅限 `title.txt`、history 根 `index.json`（手动排序），以及删除会话时的目录移除。
 
-- TypeScript
-- VS Code Extension API
-- Webview API
-- Node.js (fs, path, os)
+---
 
-## 注意事项
+## 🧱 项目结构
 
-- 当前版本需要从 CodeBuddy 配置文件中读取历史记录
-- 如果找不到历史记录文件，会显示「暂无历史记录」
-- 支持从 SQLite 数据库 (`.vscdb`) 读取（需要额外配置）
+```
+src/
+├── extension.ts          # 入口：注册 view + 命令 + 启动状态监控
+├── sidebarProvider.ts    # Webview 调度：消息收发 + 跨 IDE 切换会话
+├── historyReader.ts      # 扫描 / 读取 / 重命名 / 删除 / 排序读写 / cwd 反查
+├── statusMonitor.ts      # 3s 轮询：状态识别 + 当前会话决策
+├── db.ts                 # workbuddy.db 访问（sql.js + sql-wasm）
+└── webview/
+    ├── main.js           # 列表 / 详情 / 排序 / 拖拽 / 状态灯
+    └── style.css         # 跟随 VS Code 主题变量
+```
 
-## 许可证
+---
+
+## 🛠️ 命令
+
+| Command ID | 标题 |
+|---|---|
+| `codebuddy-history.refresh` | 刷新历史记录 |
+| `codebuddy-history.clear` | 清除历史记录（实际等同刷新） |
+
+---
+
+## 🧰 技术栈
+
+- TypeScript / VS Code Extension API / Webview API
+- `sql.js` + `sql-wasm`（读取 `workbuddy.db`）
+- `fs-extra`、Node 标准库 `fs / path / os / crypto`
+
+---
+
+## 📜 更新日志
+
+### v0.5.2
+- 📦 打包文件名固定为 `codebuddy-history-viewer.vsix`（不再带版本号），便于覆盖式更新
+- 🔧 新增 `npm run package` 一键打包脚本
+- 内部版本号升至 `0.5.2`
+
+### v0.5.1
+- 🕒 展开消息卡片右上角显示**单条消息真实时间**（来自 `requests[].startedAt`，回退到消息文件 mtime）
+- 🔄 当 `index.json` 内容变化时，正在展开的会话详情自动刷新
+
+### v0.5.0
+- ✨ 引入实时状态监控（5 种状态 + 当前会话高亮）
+- ✨ 手动拖拽排序 + 持久化
+- ✨ 重命名 / 删除会话
+- ✨ 一键回跳到 CodeBuddy IDE 会话
+
+### v0.1.0
+- 🎉 初始版本：左侧活动栏入口 + 历史列表 + 刷新
+
+---
+
+## 📄 License
 
 MIT
 
-## 贡献
+## 🤝 贡献
 
-欢迎提交 Issue 和 Pull Request！
-
-## 更新日志
-
-### v0.1.0 (2026-05-06)
-- ✨ 初始版本发布
-- 📋 添加左侧活动栏按钮
-- 💬 显示聊天历史记录
-- 🔄 支持刷新功能
+欢迎 Issue / PR。
