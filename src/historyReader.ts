@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import * as cp from 'child_process';
+import { querySqlite, getWorkBuddyDbPath } from './db';
 
 export type ChatStatus = 'idle' | 'running' | 'error' | 'completed' | 'pending';
 
@@ -134,32 +134,36 @@ interface SessionDBCache {
     byCwd: Map<string, SessionTitleInfo[]>;
 }
 
-function readSessionTitlesFromDB(): SessionDBCache {
+async function readSessionTitlesFromDB(): Promise<SessionDBCache> {
     const byId = new Map<string, SessionTitleInfo>();
     const byIdNoHyphen = new Map<string, SessionTitleInfo>();
     const byCwd = new Map<string, SessionTitleInfo[]>();
-    const dbPath = path.join(os.homedir(), '.workbuddy', 'workbuddy.db');
+    const dbPath = getWorkBuddyDbPath();
 
     if (!fs.existsSync(dbPath)) {
         return { byId, byIdNoHyphen, byCwd };
     }
 
     try {
-        const query = `SELECT id, title, custom_title, cwd FROM sessions WHERE deleted_at IS NULL`;
-        const result = cp.execSync(`sqlite3 "${dbPath}" "${query}"`, {
-            encoding: 'utf-8',
-            timeout: 5000,
-            windowsHide: true
-        });
+        const results = await querySqlite(
+            dbPath,
+            `SELECT id, title, custom_title, cwd FROM sessions WHERE deleted_at IS NULL`
+        );
 
-        for (const line of result.trim().split('\n')) {
-            if (!line) { continue; }
-            const parts = line.split('|');
-            if (parts.length >= 4) {
-                const sessionId = parts[0];
-                const title = parts[1] || '';
-                const customTitle = parts[2] || null;
-                const cwd = parts.slice(3).join('|');
+        if (results.length > 0) {
+            const { columns, values } = results[0];
+            const idIdx = columns.indexOf('id');
+            const titleIdx = columns.indexOf('title');
+            const customTitleIdx = columns.indexOf('custom_title');
+            const cwdIdx = columns.indexOf('cwd');
+
+            for (const row of values) {
+                const sessionId = String(row[idIdx] || '');
+                const title = String(row[titleIdx] || '');
+                const customTitle = row[customTitleIdx] != null ? String(row[customTitleIdx]) : null;
+                const cwd = String(row[cwdIdx] || '');
+
+                if (!sessionId) { continue; }
                 const info: SessionTitleInfo = { title, customTitle, cwd, sessionId };
                 byId.set(sessionId, info);
                 // 同时用去掉连字符的 ID 建索引（文件系统目录名是不带连字符的 UUID）
@@ -171,8 +175,8 @@ function readSessionTitlesFromDB(): SessionDBCache {
                 byCwd.set(cwdKey, arr);
             }
         }
-    } catch {
-        // sqlite3 命令不可用，静默失败
+    } catch (error) {
+        console.error('[HistoryViewer] readSessionTitlesFromDB failed:', error);
     }
 
     return { byId, byIdNoHyphen, byCwd };
@@ -189,12 +193,47 @@ function buildSessionTitle(inboundText: string): string {
 }
 
 /**
- * 从文本中提取 <user_query> 标签内的内容
- * 如果没有 <user_query> 标签，返回 null
+ * 从文本中提取 <user_query> 标签内的内容（仅取"当前轮"的真实用户输入）
+ *
+ * 重要背景 — CodeBuddy 在多轮对话中会把上一轮的对话上下文重新拼接进当前轮的
+ * user message body。具体结构通常是：
+ *
+ *   <整段 user message>
+ *   ├─ <cb_summary>
+ *   │    ... <previous_user_message>、<previous_assistant_message>、
+ *   │        <previous_tool_call> ... 这些历史段落里 **频繁引用 <user_query>
+ *   │        字面文字**（既包含上一轮的真实 query，也包含 assistant 解释代码
+ *   │        时贴的源码字符串、工具调用 old_str 参数中的源码等）
+ *   │  </cb_summary>
+ *   │
+ *   ├─ <additional_data> ...
+ *   │
+ *   └─ <user_query>本轮真正的用户输入</user_query>   ← 真实输入永远在最末尾
+ *
+ * 因此提取顺序：
+ *   1. 优先从 `</cb_summary>` 之后的"当前轮区域"找 `<user_query>`；
+ *   2. 若没有 `</cb_summary>`（首轮对话），退化为整段文本；
+ *   3. 取该区域中 **最后一个** `<user_query>` 匹配（额外的稳健保护）；
+ *   4. 都没找到则返回 null（保持原行为）。
+ *
+ * 这样能正确处理两种情况：
+ *   - 首轮：整段只有一个 user_query → 拿到它本身。
+ *   - 多轮（被 cb_summary 包裹）：忽略 summary 内所有引用，只拿当前真实输入。
  */
 function extractUserQueryContent(text: string): string | null {
-    const match = text.match(/<user_query>([\s\S]*?)<\/user_query>/);
-    return match ? match[1].trim() : null;
+    if (!text) { return null; }
+
+    // 1) 切到 </cb_summary> 之后的区域
+    const cbEndIdx = text.lastIndexOf('</cb_summary>');
+    const region = cbEndIdx >= 0
+        ? text.slice(cbEndIdx + '</cb_summary>'.length)
+        : text;
+
+    // 2) 取该区域内最后一个 <user_query>...</user_query>
+    const re = /<user_query>([\s\S]*?)<\/user_query>/g;
+    const matches = [...region.matchAll(re)];
+    if (matches.length === 0) { return null; }
+    return matches[matches.length - 1][1].trim();
 }
 
 /**
@@ -236,18 +275,18 @@ function extractMessageContent(rawMessage: string, maxLength: number = 200): str
 /**
  * 从 historyRoot 读取单个目录下的会话列表
  */
-function readSessionsFromRoot(
+async function readSessionsFromRoot(
     historyRoot: string,
     filterHashes?: string[]
-): ChatHistory[] {
+): Promise<ChatHistory[]> {
     const results: ChatHistory[] = [];
 
     if (!fs.existsSync(historyRoot)) {
-        return results;
+        return Promise.resolve(results);
     }
 
     // 从数据库读取所有会话信息
-    const dbCache = readSessionTitlesFromDB();
+    const dbCache = await readSessionTitlesFromDB();
 
     // 建立 workspaceHash → cwd 的反向映射
     // workspaceHash = MD5(normalize(cwd))，遍历数据库中的 cwd 计算哈希
@@ -282,8 +321,11 @@ function readSessionsFromRoot(
         .filter(d => d.isDirectory())
         .map(d => d.name);
 
+    console.log(`[HistoryViewer] ${historyRoot} 下的 workspaceDirs:`, workspaceDirs, 'filterHashes:', filterHashes);
+
     for (const workspaceHash of workspaceDirs) {
         if (filterHashes && !filterHashes.includes(workspaceHash)) {
+            console.log(`[HistoryViewer] 跳过 workspaceHash ${workspaceHash}，不在 filterHashes 中`);
             continue;
         }
 
@@ -323,10 +365,13 @@ function readSessionsFromRoot(
             .filter(d => d.isDirectory())
             .map(d => d.name);
 
+        console.log(`[HistoryViewer] workspace ${workspaceHash} 下的 sessionDirs:`, sessionDirs);
+
         for (const sessionDir of sessionDirs) {
             try {
                 const indexPath = path.join(workspacePath, sessionDir, 'index.json');
                 if (!fs.existsSync(indexPath)) {
+                    console.log(`[HistoryViewer] 跳过 ${sessionDir}，index.json 不存在`);
                     continue;
                 }
 
@@ -412,10 +457,11 @@ function readSessionsFromRoot(
                     if (fs.existsSync(msgFilePath)) {
                         try {
                             const msgData = JSON.parse(fs.readFileSync(msgFilePath, 'utf-8'));
-                            const rawContent = extractMessageContent(msgData.message || '');
+                            // 先提取完整内容（不截断），确保 user_query 标签完整
+                            const fullContent = extractMessageContent(msgData.message || '', Infinity);
                             // 优先使用 <user_query> 标签内的内容作为预览
-                            const userQueryContent = extractUserQueryContent(rawContent);
-                            firstUserContent = userQueryContent || rawContent;
+                            const userQueryContent = extractUserQueryContent(fullContent);
+                            firstUserContent = userQueryContent || fullContent;
                             preview = firstUserContent.substring(0, 150).replace(/\n/g, ' ');
                         } catch { /* ignore parse errors */ }
                     }
@@ -451,10 +497,14 @@ function readSessionsFromRoot(
                 let status: ChatStatus = 'idle';
                 if (requests.length > 0) {
                     const lastRequest = requests[requests.length - 1];
-                    if (lastRequest.state === 'active') {
+                    const reqState = lastRequest.state;
+                    // 真实取值：'running' / 'complete' / 'active' / 'pending' / 'error'
+                    if (reqState === 'running' || reqState === 'active' || reqState === 'pending') {
                         status = 'running';
-                    } else if (lastRequest.state === 'complete') {
+                    } else if (reqState === 'complete' || reqState === 'completed') {
                         status = 'completed';
+                    } else if (reqState === 'error' || reqState === 'failed') {
+                        status = 'error';
                     }
                 }
 
@@ -504,15 +554,19 @@ export async function readCodeBuddyHistory(currentWorkspacePath?: string): Promi
         const roots = discoverHistoryRoots();
 
         if (roots.length === 0) {
-            console.log('未找到 CodeBuddyExtension 历史记录目录');
+            console.log('[HistoryViewer] 未找到 CodeBuddyExtension 历史记录目录');
             return history;
         }
 
+        console.log('[HistoryViewer] 发现 history roots:', roots);
+
         // 计算当前工作区的候选哈希
         const filterHashes = currentWorkspacePath ? getCandidateHashes(currentWorkspacePath) : undefined;
+        console.log('[HistoryViewer] 当前工作区:', currentWorkspacePath, '过滤哈希:', filterHashes);
 
         for (const root of roots) {
-            const sessions = readSessionsFromRoot(root, filterHashes);
+            const sessions = await readSessionsFromRoot(root, filterHashes);
+            console.log(`[HistoryViewer] 从 ${root} 读取到 ${sessions.length} 个会话`);
             history.push(...sessions);
         }
 
@@ -653,7 +707,7 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
         }
 
         // 优先级2: 从数据库读取标题（仅在没有自定义标题和 convName 时）
-        const dbCache = readSessionTitlesFromDB();
+        const dbCache = await readSessionTitlesFromDB();
         const dbInfo = dbCache.byIdNoHyphen.get(sessionDir) || dbCache.byId.get(sessionDir);
         if (dbInfo) {
             if (!hasCustomTitle && !convName) {

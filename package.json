@@ -57,7 +57,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && npm run copy-sql-wasm",
+    "copy-sql-wasm": "node -e \"const fs=require('fs');const p=require('path');const src=p.join('node_modules','sql.js','dist');const dst=p.join('out','sql-js');if(!fs.existsSync(dst))fs.mkdirSync(dst,{recursive:true});['sql-wasm.js','sql-wasm.wasm'].forEach(f=>{const s=p.join(src,f);const d=p.join(dst,f);if(!fs.existsSync(d)||fs.statSync(s).mtimeMs>fs.statSync(d).mtimeMs){fs.copyFileSync(s,d);console.log('Copied '+f)}})\"",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "test": "node ./out/test/runTest.js"
@@ -65,10 +66,12 @@
   "devDependencies": {
     "@types/fs-extra": "^11.0.0",
     "@types/node": "^18.0.0",
+    "@types/sql.js": "^1.4.11",
     "@types/vscode": "^1.80.0",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "fs-extra": "^11.2.0"
+    "fs-extra": "^11.2.0",
+    "sql.js": "^1.14.1"
   }
 }

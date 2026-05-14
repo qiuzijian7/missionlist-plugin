@@ -1,9 +1,15 @@
 import * as vscode from 'vscode';
 import { readCodeBuddyHistory, renameChatHistory, deleteChatHistory, readChatDetail, saveHistoryOrder } from './historyReader';
+import { logFromWebview, setManualActiveSession } from './statusMonitor';
 
 export class SidebarProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _extensionUri: vscode.Uri;
+
+    /** 上次发送的活跃会话 ID（仅变化且 webview 就绪时才 postMessage） */
+    private _lastActiveSessionId: string | null = null;
+    /** 上次发送的状态 map JSON */
+    private _lastStatusMapJson: string = '';
 
     constructor(extensionUri: vscode.Uri) {
         this._extensionUri = extensionUri;
@@ -48,6 +54,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     case 'deleteChat':
                         await this.deleteChat(message.chatId, message.title);
                         break;
+                    case 'debugLog':
+                        logFromWebview(String(message.text || ''));
+                        break;
                 }
             }
         );
@@ -66,6 +75,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 type: 'updateHistory',
                 data: history
             });
+
+            // DOM 重建后指示灯会丢失，需要重推状态数据
+            // 清除缓存以便下次 updateActiveSession/updateStatus 强制发送
+            this._lastActiveSessionId = null;
+            this._lastStatusMapJson = '';
         }
     }
 
@@ -102,6 +116,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 vscode.window.showWarningMessage('无法打开：缺少会话标识 (conversationId)');
                 return;
             }
+
+            // 立即把"当前活跃会话"设为用户点击的这个，并即时刷新高亮
+            // 不等下一轮 fs 扫描，避免切换会话后高亮延迟/不更新
+            setManualActiveSession(conversationId);
 
             console.log('[HistoryViewer] Attempting to switch to conversation:', conversationId);
 
@@ -343,28 +361,44 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * 更新聊天状态
+     * 更新聊天状态（仅变化且 webview 就绪时才发送）
      * @param statusMap 状态映射表 { chatId: status }
      */
     public updateStatus(statusMap: Record<string, string>): void {
+        const newJson = JSON.stringify(statusMap);
+        if (newJson === this._lastStatusMapJson) { return; }
+
         if (this._view) {
             this._view.webview.postMessage({
                 type: 'updateStatus',
                 data: statusMap
             });
+            this._lastStatusMapJson = newJson;
         }
+        // 若 _view 尚未就绪，不更新缓存，等下次 _view 就绪后自然会发送
     }
 
     /**
-     * 更新当前激活的会话（用于高亮显示）
+     * 更新当前激活的会话（仅变化且 webview 就绪时才发送）
      * @param sessionId 当前激活的会话 ID（sessionDir 格式），null 表示没有激活的会话
      */
     public updateActiveSession(sessionId: string | null): void {
+        if (sessionId === this._lastActiveSessionId) {
+            return; // 无变化，静默
+        }
+
+        const hasView = !!this._view;
+        logFromWebview(`[updateActiveSession] sessionId=${sessionId}, last=${this._lastActiveSessionId}, hasView=${hasView}`);
+
         if (this._view) {
             this._view.webview.postMessage({
                 type: 'updateActiveSession',
                 data: sessionId
             });
+            this._lastActiveSessionId = sessionId;
+            logFromWebview(`[updateActiveSession] sent to webview`);
+        } else {
+            logFromWebview(`[updateActiveSession] SKIPPED (webview not ready)`);
         }
     }
 

@@ -1,4 +1,3 @@
-node_modules/**
 src/**
 !src/webview/**
 test-data/**
@@ -9,3 +8,5 @@ test-data/**
 tsconfig.json
 package-lock.json
 README.md
+temp-*.js
+clean-temp.js
