@@ -335,6 +335,15 @@
             if (e.target.closest('.action-btn') || e.target.closest('.expand-btn')) {
                 return;
             }
+
+            // 立即在前端更新选中高亮，不等后端异步推送 updateActiveSession
+            // 这样用户点击后高亮切换是即时的，避免时序竞争导致高亮不更新
+            const newActiveDir = chat.sessionDir || '';
+            if (newActiveDir && newActiveDir !== activeSessionId) {
+                activeSessionId = newActiveDir;
+                refreshAllIndicators();
+            }
+
             vscode.postMessage({
                 type: 'openSessionInCodeBuddy',
                 sessionId: chat.sessionId,
