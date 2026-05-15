@@ -604,12 +604,13 @@ export async function readCodeBuddyHistory(currentWorkspacePath?: string): Promi
             }
         }
 
-        // 将不在自定义顺序中的"新会话"按时间倒序追加到末尾，
-        // 保证已固化的拖拽顺序不被打乱，新会话以稳定方式（最新在前）出现
+        // 将不在自定义顺序中的"新会话"按时间倒序插入到顶部，
+        // 保证新创建的会话默认显示在顶部，方便用户快速访问
         const newcomers = Array.from(historyMap.values())
             .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        for (const chat of newcomers) {
-            orderedHistory.push(chat);
+        // 新会话插入到顶部（倒序遍历，使最新的在最前面）
+        for (let i = newcomers.length - 1; i >= 0; i--) {
+            orderedHistory.unshift(newcomers[i]);
         }
 
         // 关键：一旦出现新会话或 customOrder 中包含已不存在的 id，

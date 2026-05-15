@@ -2,7 +2,7 @@
   "name": "codebuddy-history-viewer",
   "displayName": "CodeBuddy History Viewer",
   "description": "在左侧边栏显示 CodeBuddy 历史聊天内容",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "publisher": "qiuzijian",
   "repository": {
     "type": "git",
