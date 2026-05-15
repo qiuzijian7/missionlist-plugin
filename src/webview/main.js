@@ -43,6 +43,9 @@
 
     let clickSuppressed = false;
 
+    // 是否正在编辑标题（防止刷新时销毁输入态）
+    let isEditingTitle = false;
+
     // 存储状态映射
     let statusMap = {};
     let activeSessionId = null;
@@ -70,6 +73,11 @@
     function handleMessage(message) {
         switch (message.type) {
             case 'updateHistory':
+                // 如果正在编辑标题，跳过列表刷新，避免销毁输入态
+                if (isEditingTitle) {
+                    dlog('跳过 updateHistory：正在编辑标题');
+                    return;
+                }
                 currentHistory = message.data || [];
                 sortAndDisplayHistory();
                 // 列表刷新后，对仍处于展开状态的会话强制重新拉取详情
@@ -242,7 +250,7 @@
 
         div.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
-            if (e.target.closest('.action-btn') || e.target.closest('.expand-btn')) return;
+            if (e.target.closest('.action-btn') || e.target.closest('.expand-btn') || e.target.closest('input')) return;
             onItemMouseDown(chat.id, e);
         });
 
@@ -332,7 +340,7 @@
                 clickSuppressed = false;
                 return;
             }
-            if (e.target.closest('.action-btn') || e.target.closest('.expand-btn')) {
+            if (e.target.closest('.action-btn') || e.target.closest('.expand-btn') || e.target.closest('input')) {
                 return;
             }
 
@@ -373,6 +381,7 @@
 
     // ===== 启用重命名模式 =====
     function enableRename(chat, titleElement) {
+        isEditingTitle = true;  // 标记正在编辑标题
         const currentTitle = chat.title || '无标题对话';
         const input = document.createElement('input');
         input.type = 'text';
@@ -385,6 +394,7 @@
         input.select();
 
         const saveRename = () => {
+            isEditingTitle = false;  // 清除编辑标志
             const newTitle = input.value.trim();
             if (newTitle && newTitle !== currentTitle) {
                 vscode.postMessage({
@@ -396,10 +406,15 @@
                 titleElement.textContent = newTitle;
             }
             parent.replaceChild(titleElement, input);
+            // 编辑完成后手动触发刷新，获取最新数据
+            setTimeout(() => vscode.postMessage({ type: 'refresh' }), 100);
         };
 
         const cancelRename = () => {
+            isEditingTitle = false;  // 清除编辑标志
             parent.replaceChild(titleElement, input);
+            // 编辑完成后手动触发刷新，获取最新数据
+            setTimeout(() => vscode.postMessage({ type: 'refresh' }), 100);
         };
 
         input.addEventListener('blur', saveRename);

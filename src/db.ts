@@ -79,6 +79,37 @@ export async function querySqlite(dbPath: string, query: string): Promise<QueryR
     }
 }
 
+/**
+ * 使用 sql.js 执行 SQLite 写操作（UPDATE/INSERT/DELETE）
+ * 执行后将修改写回磁盘
+ * @param dbPath 数据库文件路径
+ * @param query SQL 语句
+ * @returns 是否成功
+ */
+export async function execSqlite(dbPath: string, query: string): Promise<boolean> {
+    if (!fs.existsSync(dbPath)) {
+        return false;
+    }
+
+    const SQL = await getSqlJs();
+    const fileBuffer = fs.readFileSync(dbPath);
+    const db: Database = new SQL.Database(fileBuffer);
+
+    try {
+        db.run(query);
+        // 将修改写回磁盘
+        const data = db.export();
+        const buffer = Buffer.from(data);
+        fs.writeFileSync(dbPath, buffer);
+        return true;
+    } catch (e) {
+        console.error('[DB] execSqlite failed:', e);
+        return false;
+    } finally {
+        db.close();
+    }
+}
+
 /** WorkBuddy 数据库默认路径 */
 export function getWorkBuddyDbPath(): string {
     return path.join(os.homedir(), '.workbuddy', 'workbuddy.db');

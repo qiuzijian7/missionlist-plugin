@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { querySqlite, getWorkBuddyDbPath } from './db';
+import { querySqlite, execSqlite, getWorkBuddyDbPath } from './db';
 
 export type ChatStatus = 'idle' | 'running' | 'error' | 'completed' | 'pending';
 
@@ -383,10 +383,19 @@ async function readSessionsFromRoot(
                 let preview = '';
                 let sessionId: string | undefined;
 
-                // 优先级0（最高）: 读取用户自定义的 title.txt（通过插件重命名功能保存）
+                // 优先级0: 从工作区 index.json 的 conversations[].name 读取标题
+                // 这是 CodeBuddy IDE 中实际显示的对话名称（最高优先级）
+                const convName = conversationNames.get(sessionDir);
+                let hasConvName = false;
+                if (convName) {
+                    title = convName;
+                    hasConvName = true;
+                }
+
+                // 优先级1: 读取用户自定义的 title.txt（向后兼容，仅在没有 convName 时使用）
                 const customTitleFile = path.join(workspacePath, sessionDir, 'title.txt');
                 let hasCustomTitle = false;
-                if (fs.existsSync(customTitleFile)) {
+                if (!hasConvName && fs.existsSync(customTitleFile)) {
                     try {
                         const customTitle = fs.readFileSync(customTitleFile, 'utf-8').trim();
                         if (customTitle) {
@@ -394,13 +403,6 @@ async function readSessionsFromRoot(
                             hasCustomTitle = true;
                         }
                     } catch { /* ignore */ }
-                }
-
-                // 优先级1: 从工作区 index.json 的 conversations[].name 读取标题
-                // 这是 CodeBuddy IDE 中实际显示的对话名称
-                const convName = conversationNames.get(sessionDir);
-                if (!hasCustomTitle && convName) {
-                    title = convName;
                 }
 
                 // 尝试从数据库匹配（用于获取 sessionId 等额外信息）
@@ -748,10 +750,31 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
         let title = '未命名对话';
         let sessionId: string | undefined;
 
-        // 优先级0（最高）: 读取用户自定义的 title.txt
+        // 优先级0: 从工作区 index.json 的 conversations[].name 读取标题
+        // 这是 CodeBuddy IDE 中实际显示的对话名称（最高优先级）
+        const wsIndexPath = path.join(historyRoot, workspaceHash, 'index.json');
+        let convName: string | undefined;
+        let convLastMessageAt: string | undefined;
+        let hasConvName = false;
+        if (fs.existsSync(wsIndexPath)) {
+            try {
+                const wsIndex = JSON.parse(fs.readFileSync(wsIndexPath, 'utf-8'));
+                const conv = (wsIndex.conversations || []).find((c: any) => c.id === sessionDir);
+                if (conv && conv.name) {
+                    convName = conv.name;
+                    title = conv.name;
+                    hasConvName = true;
+                }
+                if (conv && conv.lastMessageAt) {
+                    convLastMessageAt = conv.lastMessageAt;
+                }
+            } catch { /* ignore */ }
+        }
+
+        // 优先级1: 读取用户自定义的 title.txt（向后兼容，仅在没有 convName 时使用）
         let hasCustomTitle = false;
         const customTitleFile = path.join(sessionPath, 'title.txt');
-        if (fs.existsSync(customTitleFile)) {
+        if (!hasConvName && fs.existsSync(customTitleFile)) {
             try {
                 const customTitle = fs.readFileSync(customTitleFile, 'utf-8').trim();
                 if (customTitle) {
@@ -761,38 +784,17 @@ export async function readChatDetail(chatId: string): Promise<ChatHistory | null
             } catch { /* ignore */ }
         }
 
-        // 优先级1: 从工作区 index.json 的 conversations[].name 读取标题
-        // 这是 CodeBuddy IDE 中实际显示的对话名称
-        const wsIndexPath = path.join(historyRoot, workspaceHash, 'index.json');
-        let convName: string | undefined;
-        let convLastMessageAt: string | undefined;
-        if (fs.existsSync(wsIndexPath)) {
-            try {
-                const wsIndex = JSON.parse(fs.readFileSync(wsIndexPath, 'utf-8'));
-                const conv = (wsIndex.conversations || []).find((c: any) => c.id === sessionDir);
-                if (conv && conv.name) {
-                    convName = conv.name;
-                    if (!hasCustomTitle) {
-                        title = conv.name;
-                    }
-                }
-                if (conv && conv.lastMessageAt) {
-                    convLastMessageAt = conv.lastMessageAt;
-                }
-            } catch { /* ignore */ }
-        }
-
-        // 优先级2: 从数据库读取标题（仅在没有自定义标题和 convName 时）
+        // 优先级2: 从数据库读取标题（仅在没有 convName 和自定义标题时）
         const dbCache = await readSessionTitlesFromDB();
         const dbInfo = dbCache.byIdNoHyphen.get(sessionDir) || dbCache.byId.get(sessionDir);
         if (dbInfo) {
-            if (!hasCustomTitle && !convName) {
+            if (!hasConvName && !hasCustomTitle) {
                 title = dbInfo.customTitle || dbInfo.title || '未命名对话';
             }
             sessionId = dbInfo.sessionId;
         }
         // 优先级3: 使用与 CodeBuddy 一致的算法从第一条用户消息生成标题
-        if (!hasCustomTitle && !convName && !dbInfo) {
+        if (!hasConvName && !hasCustomTitle && !dbInfo) {
             const firstUserMsg = chatMessages.find(m => m.role === 'user');
             if (firstUserMsg) {
                 title = buildSessionTitle(firstUserMsg.content);
@@ -857,6 +859,7 @@ export function formatTimestamp(timestamp: number): string {
 
 /**
  * 重命名聊天记录
+ * 与 CodeBuddy IDE 保持一致：同时更新数据库、index.json 和 title.txt
  */
 export async function renameChatHistory(chatId: string, newTitle: string): Promise<boolean> {
     try {
@@ -870,13 +873,54 @@ export async function renameChatHistory(chatId: string, newTitle: string): Promi
             return false;
         }
 
-        const sessionPath = path.join(historyRoot, workspaceHash, sessionDir);
+        const workspacePath = path.join(historyRoot, workspaceHash);
+        const sessionPath = path.join(workspacePath, sessionDir);
         if (!fs.existsSync(sessionPath)) {
             return false;
         }
 
+        // 方式1：更新 SQLite 数据库（CodeBuddy IDE 从此读取标题）
+        const dbPath = getWorkBuddyDbPath();
+        if (fs.existsSync(dbPath)) {
+            try {
+                // 使用 execSqlite（写操作后持久化到磁盘），而非 querySqlite（只读不写回）
+                const escapedTitle = newTitle.replace(/'/g, "''");
+                const ok = await execSqlite(
+                    dbPath,
+                    `UPDATE sessions SET custom_title = '${escapedTitle}' WHERE REPLACE(id, '-', '') = '${sessionDir}'`
+                );
+                if (ok) {
+                    console.log(`[HistoryViewer] 已更新数据库中的会话标题: ${newTitle}`);
+                } else {
+                    console.error('[HistoryViewer] 更新数据库失败: execSqlite 返回 false');
+                }
+            } catch (e) {
+                console.error('更新数据库失败:', e);
+            }
+        }
+
+        // 方式2：更新工作区 index.json 的 conversations[].name（向后兼容）
+        const wsIndexPath = path.join(workspacePath, 'index.json');
+        if (fs.existsSync(wsIndexPath)) {
+            try {
+                const wsIndex = JSON.parse(fs.readFileSync(wsIndexPath, 'utf-8'));
+                if (wsIndex.conversations && Array.isArray(wsIndex.conversations)) {
+                    const conversation = wsIndex.conversations.find((c: any) => c.id === sessionDir);
+                    if (conversation) {
+                        conversation.name = newTitle;
+                        fs.writeFileSync(wsIndexPath, JSON.stringify(wsIndex, null, 2), 'utf-8');
+                        console.log(`[HistoryViewer] 已更新 index.json 中的会话标题: ${newTitle}`);
+                    }
+                }
+            } catch (e) {
+                console.error('更新 index.json 失败:', e);
+            }
+        }
+
+        // 方式3：写入 title.txt 作为备用（向后兼容）
         const titleFilePath = path.join(sessionPath, 'title.txt');
         fs.writeFileSync(titleFilePath, newTitle, 'utf-8');
+
         return true;
     } catch (error) {
         console.error('重命名聊天记录失败:', error);
