@@ -319,11 +319,11 @@ function scanFromFileSystem(filterHashes?: string[] | null): FileScanResult {
                             if (cached && cached.mtimeMs === stat.mtimeMs) {
                                 status = cached.status;
                             } else {
-                                // mtime 变化（含首次扫描）→ 标记本轮内容有变化，
+                                // mtime 变化或首次发现新会话 → 标记本轮内容有变化，
                                 // 用于触发上层 history list 刷新（让新消息能进入 webview）
-                                if (cached) {
-                                    contentChanged = true;
-                                }
+                                // 注意：首次发现新会话（cached 为 undefined）也要标记，
+                                // 否则新建聊天会话不会出现在历史列表中
+                                contentChanged = true;
                                 const indexData = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
                                 const requests = indexData.requests || [];
                                 status = 'idle';
