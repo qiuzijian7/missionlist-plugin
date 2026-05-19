@@ -1,6 +1,5 @@
 node_modules/
 out/
-*.vsix
 .vscode/
 check_db.py
 compile_errors.txt
